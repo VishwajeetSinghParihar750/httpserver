@@ -6,6 +6,8 @@
 class logger
 { // logger singleton
 
+    bool on = false;
+
     logger() = default;
     ~logger() = default;
 
@@ -23,11 +25,18 @@ public:
 
     void logInfo(const std::string &msg) // msgs would be interleaved without lockign
     {
-        std::cout << msg << '\n';
+        if (on)
+            std::cout << msg << '\n';
     }
     void logError(const std::string &msg)
     {
-        std::cerr << msg << '\n';
+        if (on)
+            std::cerr << msg << '\n';
+    }
+    void testLog(const std::string &msg)
+    {
+
+        std::cout << msg << '\n';
     }
 };
 //

@@ -78,6 +78,7 @@ public:
 
     void eventLoop(std::stop_token stoken)
     {
+
         logger::getInstance().logInfo("[router] Event loop started");
         while (!stoken.stop_requested())
         {

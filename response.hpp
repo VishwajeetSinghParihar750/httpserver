@@ -61,7 +61,8 @@ public:
 //
 class httpResponse
 {
-    int receivedFrom_ = -1, sendTo_ = -1;
+
+    connectionId_t connectionId_{};
 
 public:
     std::string version_;
@@ -72,8 +73,7 @@ public:
 
     std::string body_;
 
-    int getReceivedFrom() const noexcept { return receivedFrom_; }
-    int getSendTo() const noexcept { return sendTo_; }
+    connectionId_t getConnectionId() const noexcept { return connectionId_; }
 
-    httpResponse(httpRequest req) : receivedFrom_(req.getReceivedFrom()), sendTo_(req.getSendTo()) {}
+    httpResponse(httpRequest req) : connectionId_(req.getConnectionId()) {}
 };

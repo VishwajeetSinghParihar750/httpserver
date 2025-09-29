@@ -1,13 +1,12 @@
-#include <future>
+#include <memory>
 #include <algorithm>
 #include <iostream>
 #include <type_traits>
 #include "threadPool.hpp"
-#include "clients.hpp"
+#include "connection.hpp"
 #include "server.hpp"
 #include "router.hpp"
 #include "responder.hpp"
-#include <memory>
 #include "logger.hpp"
 
 void setupRoutingHandlers(router &currouter)
@@ -49,13 +48,13 @@ int main()
 
     logger::getInstance().logInfo("[Main] Queues initialized"); // logging added by gpt
 
-    std::shared_ptr<clients> curClientsPtr(std::make_shared<clients>());
+    std::shared_ptr<connectionManager> curConnectionManagerPtr(std::make_shared<connectionManager>());
 
-    responder curResponder(httpResQPtr, curClientsPtr);
+    responder curResponder(httpResQPtr, curConnectionManagerPtr);
     logger::getInstance().logInfo("[Main] Responder created"); // logging added by gpt
 
     std::jthread curResponderThread([&curResponder](std::stop_token stoken) mutable
-                                    { 
+                                    {
                                      logger::getInstance().logInfo("[Responder Thread] Started event loop"); // logging added by gpt
                                      curResponder.eventLoop(stoken); }); // router started
 
@@ -71,7 +70,7 @@ int main()
          logger::getInstance().logInfo("[Router Thread] Started event loop"); // logging added by gpt
         curRouter.eventLoop(stoken); }); // router started
 
-    httpServer curServer(curClientsPtr, httpReqQPtr);
+    httpServer curServer(curConnectionManagerPtr, httpReqQPtr);
     logger::getInstance().logInfo("[Main] HTTP Server created"); // logging added by gpt
 
     logger::getInstance().logInfo("[Main] Starting server event loop (blocking)"); // logging added by gpt

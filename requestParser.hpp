@@ -1,10 +1,13 @@
 #pragma once
 
-#include <string>
-#include <unordered_map>
 #include <unistd.h>
-#include <memory>
 #include <errno.h>
+
+#include <string>
+#include <vector>
+#include <unordered_map>
+#include <memory>
+
 #include "request.hpp"
 #include "logger.hpp"
 
@@ -216,8 +219,9 @@ public:
 
         if (nread == -1 && !(errno == EWOULDBLOCK || errno == EAGAIN))
         {
+
             resetCurrentRequest();
-            return {false, std::vector<std::unique_ptr<httpRequest>>{}};
+            return std::make_pair<bool, std::vector<std::unique_ptr<httpRequest>>>(false, std::vector<std::unique_ptr<httpRequest>>());
         }
 
         bool res = true;
@@ -241,7 +245,7 @@ public:
             }
         }
 
-        return {true, std::move(currentlyParsedRequests_)};
+        return std::make_pair<bool, std::vector<std::unique_ptr<httpRequest>>>(true, std::move(currentlyParsedRequests_));
     }
 };
 

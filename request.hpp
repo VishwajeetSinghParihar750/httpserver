@@ -1,12 +1,12 @@
 #pragma once
 #include <unordered_map>
 #include <string>
-
-class httpServer;
+#include "types.hpp"
+#include "connection.hpp"
 
 class httpRequest
 {
-    int receivedFrom_ = -1, sendTo_ = -1;
+    connectionId_t connectionId_{};
 
 public:
     std::string method_, url_, version_;
@@ -15,8 +15,7 @@ public:
 
     std::string body_;
 
-    int getReceivedFrom() const noexcept { return receivedFrom_; }
-    int getSendTo() const noexcept { return sendTo_; }
+    connectionId_t getConnectionId() const noexcept { return connectionId_; }
 
-    friend class httpServer;
+    friend class connection;
 };

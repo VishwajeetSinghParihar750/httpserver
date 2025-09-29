@@ -66,13 +66,17 @@ namespace epollUtils
         return 0;
     }
 
-    int watchEpollEtFd(int efd, int fd, int flags) noexcept
+    int watchEpollEtFd(int efd, int fd, int flags, void *dataPtr = nullptr) noexcept
     {
         if (setFdNonBlocking(fd) == -1)
             return -1;
 
         epoll_event ev{};
-        ev.data.fd = fd;
+        if (dataPtr == nullptr)
+            ev.data.fd = fd;
+        else
+            ev.data.ptr = dataPtr;
+
         ev.events = EPOLLET | flags;
 
         if (epoll_ctl(efd, EPOLL_CTL_ADD, fd, &ev) == -1)
@@ -83,7 +87,7 @@ namespace epollUtils
         return 0;
     }
 
-    int unwatchEpollFd(int efd, int fd) noexcept
+        int unwatchEpollFd(int efd, int fd) noexcept
     {
         if (epoll_ctl(efd, EPOLL_CTL_DEL, fd, NULL) == -1)
         {

@@ -15,20 +15,15 @@ class httpResponseCreator // this is therad safe
 private:
     std::string buffer_;
     size_t writePos_ = 0; // Current position in buffer for writing
-    int fd_;              // towrite to
 
     std::mutex mtx_; // multiple therads can come
 
 public:
-    httpResponseCreator(int fd) : fd_(fd) {}
-
     // Add httpResponse to internal buffer in HTTP format
     void addResponse(const httpResponse &response)
     {
 
         std::unique_lock lock(mtx_);
-
-        logger::getInstance().logInfo("[ResponseCreator] Adding response to buffer for fd_=" + std::to_string(response.getSendTo()));
 
         auto oldSize = buffer_.size();
 
@@ -57,7 +52,7 @@ public:
     }
 
     // Write to file descriptor - returns true if ALL data was written, false if partial/no write
-    bool write()
+    bool write(const int fd)
     {
 
         std::unique_lock lock(mtx_);
@@ -69,19 +64,19 @@ public:
         }
 
         size_t remaining = buffer_.size() - writePos_;
-        ssize_t bytesWritten = ::write(fd_, buffer_.data() + writePos_, remaining);
+        ssize_t bytesWritten = ::write(fd, buffer_.data() + writePos_, remaining);
 
         if (bytesWritten > 0)
         {
             writePos_ += bytesWritten;
             logger::getInstance().logInfo("[ResponseCreator] Wrote " + std::to_string(bytesWritten) +
-                                          " bytes to fd_ " + std::to_string(fd_) + ". Remaining: " +
+                                          " bytes to fd " + std::to_string(fd) + ". Remaining: " +
                                           std::to_string(buffer_.size() - writePos_) + " bytes");
 
             // Check if ALL data was written
             if (writePos_ == buffer_.size())
             {
-                logger::getInstance().logInfo("[ResponseCreator] All data successfully written to fd_ " + std::to_string(fd_));
+                logger::getInstance().logInfo("[ResponseCreator] All data successfully written to fd " + std::to_string(fd));
                 return true;
             }
             return false; // Partial write
@@ -95,11 +90,11 @@ public:
         {
             if (errno == EAGAIN || errno == EWOULDBLOCK)
             {
-                logger::getInstance().logInfo("[ResponseCreator] Write would block, fd_ " + std::to_string(fd_) + " not ready");
+                logger::getInstance().logInfo("[ResponseCreator] Write would block, fd " + std::to_string(fd) + " not ready");
             }
             else
             {
-                logger::getInstance().logError("[ResponseCreator] Write error on fd_ " + std::to_string(fd_) + ", errno: " + std::to_string(errno));
+                logger::getInstance().logError("[ResponseCreator] Write error on fd " + std::to_string(fd) + ", errno: " + std::to_string(errno));
             }
             return false;
         }

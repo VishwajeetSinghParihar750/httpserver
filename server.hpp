@@ -1,3 +1,4 @@
+#pragma once
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/epoll.h>
@@ -13,13 +14,13 @@
 #include <algorithm>
 #include <fcntl.h>
 #include "fdRaii.hpp"
-#include "clients.hpp"
+#include "connection.hpp"
 #include "mpmcQueue.hpp"
 #include "epollUtils.hpp"
 #include "logger.hpp"
 //
 
-bool shouldCloseConnection(const httpRequest &req)
+inline bool shouldCloseConnection(const httpRequest &req)
 {
     if (req.headers_.contains("Connection") && req.headers_.at("Connection") == "close")
     {
@@ -39,12 +40,12 @@ class httpServer
     fdRaii sfd_; // socket file descriptor
     fdRaii efd_; // epoll file descirptor
 
-    std::shared_ptr<clients> clients_;
+    std::shared_ptr<connectionManager> connManager_;
     std::shared_ptr<mpmcRequestQ> httpRequestsQ_;
 
 public:
-    httpServer(std::shared_ptr<clients> clients, std::shared_ptr<mpmcRequestQ> httpRequestQ, std::string port = "8080", size_t maxWaitingConnections = 1024)
-        : MAX_WAITING_CONNECTIONS_(maxWaitingConnections), PORT_(port), clients_(clients), httpRequestsQ_(httpRequestQ)
+    httpServer(std::shared_ptr<connectionManager> clients, std::shared_ptr<mpmcRequestQ> httpRequestQ, std::string port = "8080", size_t maxWaitingConnections = 1024)
+        : MAX_WAITING_CONNECTIONS_(maxWaitingConnections), PORT_(port), connManager_(clients), httpRequestsQ_(httpRequestQ)
     {
         if ((sfd_ = epollUtils::getTcpServerSocket(PORT_)) == -1)
             perror("socket creation"), exit(-1);
@@ -79,6 +80,7 @@ public:
 
             for (int i = 0; i < nfds; i++)
             {
+
                 if (events[i].data.fd == sfd_)
                 {
                     int connfd = accept(sfd_, NULL, NULL);
@@ -86,11 +88,13 @@ public:
                         perror("accepting conn  ");
                     else
                     {
-                        if (clients_->addClient(connfd)) // simple rn
+                        connectionId_t connId = connManager_->addConnection(connfd);
+
+                        if (connId != 0) // simple rn
                         {
                             logger::getInstance().logInfo("[httpServer::eventLoop] New client connected, FD " + std::to_string(connfd));
 
-                            if (epollUtils::watchEpollEtFd(efd_, connfd, EPOLLIN) == -1)
+                            if (epollUtils::watchEpollEtFd(efd_, connfd, EPOLLIN, new connectionId_t(connId)) == -1)
                                 perror("could not add fd to watch "), exit(-1);
                         }
                     }
@@ -99,37 +103,31 @@ public:
                 {
                     // handle input for client
 
-                    int cfd = events[i].data.fd;
-                    logger::getInstance().logInfo("[httpServer::eventLoop] Data available from client FD " + std::to_string(cfd));
+                    connectionId_t *connIdPtr = (connectionId_t *)events[i].data.ptr;
+                    logger::getInstance().logInfo("[httpServer::eventLoop] Data available from client FD ");
 
-                    auto parserPtr = clients_->getClientsHttpRequestParser(cfd);
-                    if (parserPtr != nullptr)
+                    std::pair<bool, std::vector<std::unique_ptr<httpRequest>>> res = connManager_->readRequests(*connIdPtr);
+
+                    if (!res.first ||
+                        (res.first && !res.second.empty() && shouldCloseConnection(*res.second.back())))
                     {
-                        std::pair<bool, std::vector<std::unique_ptr<httpRequest>>> res = parserPtr->parseRequest();
 
-                        // take this http logci outside
-                        if (!res.first ||
-                            (res.first && !res.second.empty() && shouldCloseConnection(*res.second.back())))
-                        {
-                            if (!clients_->removeClient(cfd))
-                                perror("could not rmeove client "), exit(-1);
-                            break;
-                        }
+                        if (!connManager_->removeConnection(*connIdPtr))
+                            perror("could not rmeove client ");
+                        else
+                            delete connIdPtr;
 
-                        logger::getInstance().logInfo("[httpServer::eventLoop] Parsed " + std::to_string(res.second.size()) +
-                                                      " requests from client FD " + std::to_string(cfd));
-
-                        for (auto &i : res.second)
-                        {
-
-                            i->receivedFrom_ = cfd, i->sendTo_ = cfd;
-                            httpRequestsQ_->push(std::move(i));
-                            logger::getInstance().logInfo("[httpServer::eventLoop] Request pushed to queue from FD " + std::to_string(cfd));
-                        }
+                        break;
                     }
-                    else
+
+                    logger::getInstance().logInfo("[httpServer::eventLoop] Parsed " + std::to_string(res.second.size()) +
+                                                  " requests from client FD ");
+
+                    for (auto &i : res.second)
                     {
-                        logger::getInstance().logInfo("[httpServer::eventLoop] Request ignored from FD , client does not exist " + std::to_string(cfd));
+                        httpRequestsQ_->push(std::move(i));
+
+                        logger::getInstance().logInfo("[httpServer::eventLoop] Request pushed to queue from FD ");
                     }
                 }
             }
