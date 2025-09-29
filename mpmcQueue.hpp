@@ -4,6 +4,7 @@
 #include <condition_variable>
 #include <atomic>
 #include <iostream> // logging added by gpt
+#include <thread>
 
 template <typename T>
 class mpmcQueue // this might be a lock based or atmic or normal
@@ -32,12 +33,16 @@ public:
 
             if (stop_.load())
             {
-                std::cout << "[lockedMpmcQueue] push ignored, queue stopped" << std::endl; // logging added by gpt
+                std::cout << "[lockedMpmcQueue][Thread "
+                          << std::this_thread::get_id()
+                          << "] push ignored, queue stopped" << std::endl; // logging added by gpt
                 return;
             }
 
             q_.push(std::move(obj));
-            std::cout << "[lockedMpmcQueue] push done, queue size=" << q_.size() << std::endl; // logging added by gpt
+            std::cout << "[lockedMpmcQueue][Thread "
+                      << std::this_thread::get_id()
+                      << "] push done, queue size=" << q_.size() << std::endl; // logging added by gpt
         }
         notEmptyCv_.notify_one();
     }
@@ -53,13 +58,17 @@ public:
 
             if (stop_.load())
             {
-                std::cout << "[lockedMpmcQueue] pop returned empty, queue stopped" << std::endl; // logging added by gpt
+                std::cout << "[lockedMpmcQueue][Thread "
+                          << std::this_thread::get_id()
+                          << "] pop returned empty, queue stopped" << std::endl; // logging added by gpt
                 return {};
             }
 
             curTask = std::move(q_.front());
             q_.pop();
-            std::cout << "[lockedMpmcQueue] pop done, queue size=" << q_.size() << std::endl; // logging added by gpt
+            std::cout << "[lockedMpmcQueue][Thread "
+                      << std::this_thread::get_id()
+                      << "] pop done, queue size=" << q_.size() << std::endl; // logging added by gpt
         }
         return curTask;
     }
@@ -68,6 +77,8 @@ public:
     {
         stop_.store(true);
         notEmptyCv_.notify_all();
-        std::cout << "[lockedMpmcQueue] stop called, all waiting threads notified" << std::endl; // logging added by gpt
+        std::cout << "[lockedMpmcQueue][Thread "
+                  << std::this_thread::get_id()
+                  << "] stop called, all waiting threads notified" << std::endl; // logging added by gpt
     }
 };

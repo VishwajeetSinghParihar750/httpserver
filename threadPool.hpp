@@ -6,10 +6,10 @@
 #include <queue>
 #include <atomic>
 #include <stop_token>
-#include <iostream> // logging added by gpt
 #include "mpmcQueue.hpp"
 #include "task.hpp"
-//
+#include "logger.hpp"
+
 class threadPool
 {
     using taskQ = mpmcQueue<std::unique_ptr<task>>;
@@ -19,32 +19,31 @@ class threadPool
 
     void eventloop(std::stop_token stoken)
     {
-        std::cout << "[threadPool] Worker thread started" << std::endl; // logging added by gpt
+        logger::getInstance().logInfo("[threadPool] Worker thread started");
         while (!stoken.stop_requested())
         {
             auto curTask = q_->pop();
             if (curTask)
             {
-                std::cout << "[threadPool] Executing a task" << std::endl; // logging added by gpt
+                logger::getInstance().logInfo("[threadPool] Executing a task");
                 curTask->execute();
-                std::cout << "[threadPool] Task execution finished" << std::endl; // logging added by gpt
+                logger::getInstance().logInfo("[threadPool] Task execution finished");
             }
         }
-        std::cout << "[threadPool] Worker thread stopping" << std::endl; // logging added by gpt
+        logger::getInstance().logInfo("[threadPool] Worker thread stopping");
     }
 
     std::vector<std::jthread> workers_;
 
 public:
-    //
     threadPool(std::shared_ptr<taskQ> q, size_t nthreads = std::max(1u, std::thread::hardware_concurrency())) : q_(std::move(q))
     {
-        std::cout << "[threadPool] Initializing with " << nthreads << " threads" << std::endl; // logging added by gpt
+        logger::getInstance().logInfo("[threadPool] Initializing with " + std::to_string(nthreads) + " threads");
         for (int i = 0; i < nthreads; i++)
         {
             workers_.emplace_back([this](std::stop_token stoken)
                                   { eventloop(stoken); });
-            std::cout << "[threadPool] Worker thread " << i << " created" << std::endl; // logging added by gpt
+            logger::getInstance().logInfo("[threadPool] Worker thread " + std::to_string(i) + " created");
         }
     }
 
@@ -52,17 +51,16 @@ public:
 
     void addTask(std::unique_ptr<task> work)
     {
-        std::cout << "[threadPool] Adding a new task to the queue" << std::endl; // logging added by gpt
+        logger::getInstance().logInfo("[threadPool] Adding a new task to the queue");
         q_->push(std::move(work));
     }
 
-    //
     threadPool(threadPool &&) = default;
     threadPool &operator=(threadPool &&) = default;
 
     ~threadPool()
     {
-        std::cout << "[threadPool] Stopping thread pool, signaling queue to stop" << std::endl; // logging added by gpt
+        logger::getInstance().logInfo("[threadPool] Stopping thread pool, signaling queue to stop");
         q_->stop();
     }
 };

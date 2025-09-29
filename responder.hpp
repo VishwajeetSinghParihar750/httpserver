@@ -3,111 +3,114 @@
 #include <sstream>
 #include <deque>
 #include <memory>
-#include <iostream> // logging added by gpt
 #include "mpmcQueue.hpp"
+#include "fdRaii.hpp"
 #include "response.hpp"
-
-void writeHttpResponseToDeque(std::deque<char> &buffer, const httpResponse &res)
-{
-    auto appendString = [&buffer](const std::string &str)
-    {
-        buffer.insert(buffer.end(), str.begin(), str.end());
-    };
-
-    std::cout << "[responder] Serializing response for fd=" << res.getSendTo() << std::endl; // logging added by gpt
-
-    appendString(res.version_);
-    appendString(" ");
-    appendString(httpStatus::to_string(res.statusCode_));
-    appendString(" ");
-    appendString(res.phrase_);
-    appendString("\r\n");
-
-    for (auto &[name, value] : res.headers_)
-    {
-        appendString(name);
-        appendString(": ");
-        appendString(value);
-        appendString("\r\n");
-    }
-
-    appendString("\r\n");
-
-    appendString(res.body_);
-
-    std::cout << "[responder] Response serialized, buffer size=" << buffer.size() << std::endl; // logging added by gpt
-}
+#include "epollUtils.hpp"
+#include "logger.hpp"
 
 class responder
 {
+
     using mpmcResponseQ = mpmcQueue<std::unique_ptr<httpResponse>>; //
+
     std::shared_ptr<mpmcResponseQ> httpResponseQ_;
 
-    std::unordered_map<int, std::deque<char>> buffers_;
+    std::shared_ptr<clients> clients_;
+    fdRaii efd_ = -1; // epolll fd
 
     bool checkHttpResponseValidity(const httpResponse &res) const noexcept
     {
         return res.getSendTo() != -1;
     }
 
-    void writeBackResponse(int fd) // ⚡⚡💀 add epoll it will miss data
+    void addResponse(int fd, std::unique_ptr<httpResponse> resp)
     {
-        size_t totalWritten = 0, written = 0;
-        auto &buf = buffers_[fd];
-        if (buf.empty())
+        std::shared_ptr<httpResponseCreator> respCreatorPtr = clients_->getClientsHttpResponseCreator(fd);
+        if (respCreatorPtr == nullptr)
         {
-            std::cout << "[responder] Nothing to write for fd=" << fd << std::endl; // logging added by gpt
-            return;
+            if (epollUtils::unwatchEpollFd(efd_, fd) == -1)
+                logger::getInstance().logError("[responder] remove epoll fd error ");
         }
-
-        std::string s(buf.begin(), buf.end());
-        std::cout << "[responder] Writing response to fd=" << fd << " with " << buf.size() << " bytes buffered" << std::endl; // logging added by gpt
-
-        while (!buf.empty() && (written = write(fd, s.c_str() + written, buf.size() - written)) > 0)
+        else
         {
-            totalWritten += written;
-            std::cout << "[responder] Wrote " << written << " bytes to fd=" << fd << std::endl; // logging added by gpt
+            respCreatorPtr->addResponse(*resp);
         }
-
-        buf.erase(buf.begin(), buf.begin() + totalWritten);
-
-        if (written == -1 && (errno == EWOULDBLOCK || errno == EAGAIN))
+    }
+    void writeBackResponse(int fd)
+    {
+        std::shared_ptr<httpResponseCreator> respCreatorPtr = clients_->getClientsHttpResponseCreator(fd);
+        if (respCreatorPtr == nullptr)
         {
-            std::cout << "[responder] Write would block for fd=" << fd << ", keeping buffer" << std::endl; // logging added by gpt
-            return;
+            if (epollUtils::unwatchEpollFd(efd_, fd) == -1)
+                logger::getInstance().logError("[responder] remove epoll fd error ");
         }
-
-        if (totalWritten == 0 || written == -1)
+        else
         {
-            std::cerr << "[responder] Write failed or nothing written, clearing buffer for fd=" << fd << std::endl; // logging added by gpt
-            buf.clear();
+            if (!respCreatorPtr->write())
+            {
+                if (errno == EAGAIN || errno == EWOULDBLOCK)
+                    if (epollUtils::watchEpollEtFd(efd_, fd, EPOLLONESHOT | EPOLLOUT) == -1)
+                        perror("epoll watch fd "), exit(-1);
+            }
+            else
+            {
+                // clients_->removeClient(fd); // 💀💀💀 check later, added fpr testomg
+
+                // logger::getInstance().logError("[responder] closed fd _________________________________  " + std::to_string(fd));
+            }
         }
     }
 
 public:
-    responder(std::shared_ptr<mpmcResponseQ> httpResponseQ) : httpResponseQ_(httpResponseQ)
+    responder(std::shared_ptr<mpmcResponseQ> httpResponseQ, std::shared_ptr<clients> clients) : httpResponseQ_(httpResponseQ), clients_(clients)
     {
-        std::cout << "[responder] Responder initialized" << std::endl; // logging added by gpt
+        if ((efd_ = epoll_create1(0)) == -1)
+            perror("responser efd"), exit(-1);
+
+        logger::getInstance().logInfo("[responder] Responder initialized");
+    }
+
+    void epollEventLoop(std::stop_token stoken)
+    {
+        const int MAX_EPOLL_EVENTS = 1024;
+        epoll_event ev, events[MAX_EPOLL_EVENTS];
+        while (!stoken.stop_requested())
+        {
+            int nfds = epoll_wait(efd_, events, MAX_EPOLL_EVENTS, -1);
+            if (nfds == -1)
+                perror("responder epoll event loop "), exit(-1);
+
+            for (int i = 0; i < nfds; i++)
+            {
+                writeBackResponse(events[i].data.fd);
+            }
+        }
     }
 
     void eventLoop(std::stop_token stoken) // ℹ️ℹ️ provide all event loops noexcept excpetion gaurantee [ do it actually, or add try catch if cant ]
     {
-        std::cout << "[responder] Event loop started" << std::endl; // logging added by gpt
+
+        std::jthread epollListener([&](std::stop_token stoken) mutable
+                                   { epollEventLoop(stoken); });
+
+        logger::getInstance().logInfo("[responder] Event loop started");
         while (!stoken.stop_requested())
         {
             auto res = httpResponseQ_->pop();
-            std::cout << "[responder] Response popped from queue for fd=" << res->getSendTo() << std::endl; // logging added by gpt
+            logger::getInstance().logInfo("[responder] Response popped from queue for fd=" + std::to_string(res->getSendTo()));
 
             if (checkHttpResponseValidity(*res))
             {
-                writeHttpResponseToDeque(buffers_[res->getSendTo()], *res);
-                writeBackResponse(res->getSendTo());
+                int sendto = res->getSendTo();
+                addResponse(sendto, std::move(res));
+                writeBackResponse(sendto);
             }
             else
             {
-                std::cerr << "[responder] Invalid response received (fd=-1)" << std::endl; // logging added by gpt
+                logger::getInstance().logError("[responder] Invalid response received (fd=-1)");
             }
         }
-        std::cout << "[responder] Event loop stopped" << std::endl; // logging added by gpt
+        logger::getInstance().logInfo("[responder] Event loop stopped");
     }
 };
