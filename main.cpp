@@ -52,6 +52,7 @@ int main()
     std::shared_ptr<clients> curClientsPtr(std::make_shared<clients>());
 
     responder curResponder(httpResQPtr, curClientsPtr);
+
     logger::getInstance().logInfo("[Main] Responder created"); // logging added by gpt
 
     std::jthread curResponderThread([&curResponder](std::stop_token stoken) mutable
@@ -64,11 +65,13 @@ int main()
 
     router curRouter(httpReqQPtr, taskQPtr, httpResQPtr);
     setupRoutingHandlers(curRouter);
+
     logger::getInstance().logInfo("[Main] Router created and GET handlers set up"); // logging added by gpt
 
     std::jthread curRouterThread([&curRouter](std::stop_token stoken) mutable
                                  {
          logger::getInstance().logInfo("[Router Thread] Started event loop"); // logging added by gpt
+
         curRouter.eventLoop(stoken); }); // router started
 
     httpServer curServer(curClientsPtr, httpReqQPtr);

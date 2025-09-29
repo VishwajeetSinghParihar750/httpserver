@@ -93,6 +93,10 @@ public:
                             if (epollUtils::watchEpollEtFd(efd_, connfd, EPOLLIN) == -1)
                                 perror("could not add fd to watch "), exit(-1);
                         }
+                        else
+                        {
+                            logger::getInstance().logError("[httpServer::eventloop] New client NOT connected , FD " + std::to_string(connfd));
+                        }
                     }
                 }
                 else
@@ -102,7 +106,7 @@ public:
                     int cfd = events[i].data.fd;
                     logger::getInstance().logInfo("[httpServer::eventLoop] Data available from client FD " + std::to_string(cfd));
 
-                    auto parserPtr = clients_->getClientsHttpRequestParser(cfd);
+                    auto parserPtr = clients_->getClientsHttpRequestParser(cfd, clients_->getClientIdFromConnFd(cfd));
                     if (parserPtr != nullptr)
                     {
                         std::pair<bool, std::vector<std::unique_ptr<httpRequest>>> res = parserPtr->parseRequest();
@@ -121,8 +125,9 @@ public:
 
                         for (auto &i : res.second)
                         {
+                            i->fdReadFrom_ = cfd, i->fdSendTo_ = cfd;
+                            i->clientId_ = clients_->getClientIdFromConnFd(cfd); // ⛽💀 MAYBE RACE CONDITION - design issues
 
-                            i->receivedFrom_ = cfd, i->sendTo_ = cfd;
                             httpRequestsQ_->push(std::move(i));
                             logger::getInstance().logInfo("[httpServer::eventLoop] Request pushed to queue from FD " + std::to_string(cfd));
                         }

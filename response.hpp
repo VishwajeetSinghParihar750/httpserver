@@ -3,6 +3,8 @@
 #include <unordered_map>
 #include <string>
 #include "request.hpp"
+#include "clients.hpp"
+#include "types.hpp"
 
 class httpStatus // SOURCE : gpt [coz thats what thing thing si for ]
 {
@@ -62,6 +64,7 @@ public:
 class httpResponse
 {
     int receivedFrom_ = -1, sendTo_ = -1;
+    clientId_t clientId_{};
 
 public:
     std::string version_;
@@ -74,6 +77,7 @@ public:
 
     int getReceivedFrom() const noexcept { return receivedFrom_; }
     int getSendTo() const noexcept { return sendTo_; }
+    auto getClientId() const noexcept { return clientId_; }
 
-    httpResponse(httpRequest req) : receivedFrom_(req.getReceivedFrom()), sendTo_(req.getSendTo()) {}
+    httpResponse(httpRequest req) : receivedFrom_(req.getReceivedFrom()), sendTo_(req.getSendTo()), clientId_(req.getClientId()) {}
 };

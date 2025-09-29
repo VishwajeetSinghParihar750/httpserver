@@ -19,45 +19,37 @@ class responder
     std::shared_ptr<clients> clients_;
     fdRaii efd_ = -1; // epolll fd
 
-    bool checkHttpResponseValidity(const httpResponse &res) const noexcept
+    void addResponse(std::shared_ptr<httpResponse> resp)
     {
-        return res.getSendTo() != -1;
-    }
+        std::shared_ptr<httpResponseCreator> respCreatorPtr = clients_->getClientsHttpResponseCreator(resp->getSendTo(), resp->getClientId());
 
-    void addResponse(int fd, std::unique_ptr<httpResponse> resp)
-    {
-        std::shared_ptr<httpResponseCreator> respCreatorPtr = clients_->getClientsHttpResponseCreator(fd);
         if (respCreatorPtr == nullptr)
         {
-            if (epollUtils::unwatchEpollFd(efd_, fd) == -1)
-                logger::getInstance().logError("[responder] remove epoll fd error ");
+            logger::getInstance().logError("[responder] client has been removed ");
         }
         else
         {
             respCreatorPtr->addResponse(*resp);
         }
     }
-    void writeBackResponse(int fd)
+
+    void writeBackResponse(int sendTo, auto clientId)
     {
-        std::shared_ptr<httpResponseCreator> respCreatorPtr = clients_->getClientsHttpResponseCreator(fd);
+
+        std::shared_ptr<httpResponseCreator>
+            respCreatorPtr = clients_->getClientsHttpResponseCreator(sendTo, clientId);
+
         if (respCreatorPtr == nullptr)
         {
-            if (epollUtils::unwatchEpollFd(efd_, fd) == -1)
-                logger::getInstance().logError("[responder] remove epoll fd error ");
+            logger::getInstance().logError("[responder] client has been removed ");
         }
         else
         {
             if (!respCreatorPtr->write())
             {
                 if (errno == EAGAIN || errno == EWOULDBLOCK)
-                    if (epollUtils::watchEpollEtFd(efd_, fd, EPOLLONESHOT | EPOLLOUT) == -1)
-                        perror("epoll watch fd "), exit(-1);
-            }
-            else
-            {
-                // clients_->removeClient(fd); // 💀💀💀 check later, added fpr testomg
-
-                // logger::getInstance().logError("[responder] closed fd _________________________________  " + std::to_string(fd));
+                    if (epollUtils::watchEpollEtFd(efd_, sendTo, EPOLLONESHOT | EPOLLOUT) == -1)
+                        logger::getInstance().logError("epoll watch fd "), exit(-1);
             }
         }
     }
@@ -79,11 +71,11 @@ public:
         {
             int nfds = epoll_wait(efd_, events, MAX_EPOLL_EVENTS, -1);
             if (nfds == -1)
-                perror("responder epoll event loop "), exit(-1);
+                logger::getInstance().logError("responder epoll event loop "), exit(-1);
 
             for (int i = 0; i < nfds; i++)
             {
-                writeBackResponse(events[i].data.fd);
+                writeBackResponse(events[i].data.fd, clients_->getClientIdFromConnFd(events[i].data.fd)); // 💀💀💀  RACE CONDITION
             }
         }
     }
@@ -100,16 +92,10 @@ public:
             auto res = httpResponseQ_->pop();
             logger::getInstance().logInfo("[responder] Response popped from queue for fd=" + std::to_string(res->getSendTo()));
 
-            if (checkHttpResponseValidity(*res))
-            {
-                int sendto = res->getSendTo();
-                addResponse(sendto, std::move(res));
-                writeBackResponse(sendto);
-            }
-            else
-            {
-                logger::getInstance().logError("[responder] Invalid response received (fd=-1)");
-            }
+            int sendTo = res->getSendTo();
+            auto clientId = res->getClientId();
+            addResponse(std::move(res));
+            writeBackResponse(sendTo, clientId);
         }
         logger::getInstance().logInfo("[responder] Event loop stopped");
     }
