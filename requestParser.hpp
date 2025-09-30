@@ -194,7 +194,7 @@ class httpRequestParser // for HTTP 1.1
 
     bool parseBodyChunked()
     {
-        // Not implemented yet
+        // ignore rn
         return false;
     }
 
@@ -206,7 +206,9 @@ public:
 
     std::pair<bool, std::vector<std::unique_ptr<httpRequest>>> parseRequest()
     {
-        // read all available data
+
+        currentlyParsedRequests_.clear();
+
         char buf[4096];
         ssize_t nread = 0;
         while ((nread = read(fd_, buf, sizeof(buf))) > 0)
@@ -220,8 +222,11 @@ public:
         if (nread == -1 && !(errno == EWOULDBLOCK || errno == EAGAIN))
         {
 
-            resetCurrentRequest();
-            return std::make_pair<bool, std::vector<std::unique_ptr<httpRequest>>>(false, std::vector<std::unique_ptr<httpRequest>>());
+            curRequest_->headers_.emplace("error", std::to_string(errno));
+            currentlyParsedRequests_.push_back(std::move(curRequest_));
+
+            makeNewRequest();
+            return {true, std::move(currentlyParsedRequests_)};
         }
 
         bool res = true;

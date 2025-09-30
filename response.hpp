@@ -75,5 +75,9 @@ public:
 
     connectionId_t getConnectionId() const noexcept { return connectionId_; }
 
-    httpResponse(httpRequest req) : connectionId_(req.getConnectionId()) {}
+    httpResponse(httpRequest req) : connectionId_(req.getConnectionId()) // ⚠️⚠️ here more things should be passed to response for info
+    {
+        if (req.headers_.contains("error"))
+            headers_["error"] = req.headers_["error"];
+    }
 };

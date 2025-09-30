@@ -22,7 +22,8 @@
 
 inline bool shouldCloseConnection(const httpRequest &req)
 {
-    if (req.headers_.contains("Connection") && req.headers_.at("Connection") == "close")
+    if ((req.headers_.contains("Connection") && req.headers_.at("Connection") == "close") ||
+        req.headers_.contains("error"))
     {
         return true;
     }
@@ -88,46 +89,44 @@ public:
                         perror("accepting conn  ");
                     else
                     {
-                        connectionId_t connId = connManager_->addConnection(connfd);
+                        connectionId_t *connId = connManager_->addConnection(connfd);
 
-                        if (connId != 0) // simple rn
+                        if (connId != nullptr) // simple rn
                         {
                             logger::getInstance().logInfo("[httpServer::eventLoop] New client connected, FD " + std::to_string(connfd));
 
-                            if (epollUtils::watchEpollEtFd(efd_, connfd, EPOLLIN, new connectionId_t(connId)) == -1)
+                            if (epollUtils::watchEpollEtFd(efd_, connfd, EPOLLIN, connId) == -1)
                                 perror("could not add fd to watch "), exit(-1);
+                        }
+                        else
+                        {
+                            logger::getInstance().logInfo("[httpServer::eventLoop] New client DID NOT CONNECT, FD " + std::to_string(connfd));
                         }
                     }
                 }
                 else
                 {
                     // handle input for client
+                    // sever never closes connection if request recieved responder will close after sending respones even for errors
 
                     connectionId_t *connIdPtr = (connectionId_t *)events[i].data.ptr;
+
                     logger::getInstance().logInfo("[httpServer::eventLoop] Data available from client FD ");
 
                     std::pair<bool, std::vector<std::unique_ptr<httpRequest>>> res = connManager_->readRequests(*connIdPtr);
 
-                    if (!res.first ||
-                        (res.first && !res.second.empty() && shouldCloseConnection(*res.second.back())))
+                    if (res.first && !res.second.empty())
                     {
+                        logger::getInstance().logInfo("[httpServer::eventLoop] Parsed " + std::to_string(res.second.size()) +
+                                                      " requests from client FD ");
 
-                        if (!connManager_->removeConnection(*connIdPtr))
-                            perror("could not rmeove client ");
-                        else
-                            delete connIdPtr;
+                        for (auto &i : res.second)
+                        {
 
-                        break;
-                    }
+                            httpRequestsQ_->push(std::move(i));
 
-                    logger::getInstance().logInfo("[httpServer::eventLoop] Parsed " + std::to_string(res.second.size()) +
-                                                  " requests from client FD ");
-
-                    for (auto &i : res.second)
-                    {
-                        httpRequestsQ_->push(std::move(i));
-
-                        logger::getInstance().logInfo("[httpServer::eventLoop] Request pushed to queue from FD ");
+                            logger::getInstance().logInfo("[httpServer::eventLoop] Request pushed to queue from FD ");
+                        }
                     }
                 }
             }

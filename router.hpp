@@ -24,6 +24,25 @@ class router
 
     void processRequest(std::unique_ptr<httpRequest> req)
     {
+        if (req->headers_.contains("error")) // ⚠️⚠️🤚🤚 DUMMY - need to setup corect hadlers
+        {
+            callableTask curTask = [req = std::move(req), this]() mutable
+            {
+                logger::getInstance().logInfo("[TASK] Entered task ");
+
+                auto res = std::make_unique<httpResponse>(*req);
+
+                auto result = getHandlers_["/"](std::move(req), std::move(res));
+
+                logger::getInstance().logInfo("[TASK] Handler execution finished, pushing response to responseQ");
+                httpResponseQ_->push(std::move(result));
+            };
+
+            httpTasksQ_->push(std::make_unique<decltype(curTask)>(std::move(curTask)));
+
+            return;
+        }
+
         if (req->method_ == "GET")
         {
             logger::getInstance().logInfo("[router] recieved GET request for URL: " + req->url_ + " " + std::to_string(getHandlers_.contains(req->url_)));

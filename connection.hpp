@@ -4,14 +4,16 @@
 #include <unordered_map>
 #include <atomic>
 #include "requestParser.hpp"
+
 #include "responseCreator.hpp"
 #include "fdRaii.hpp"
 #include "types.hpp"
+#include "logger.hpp"
 
 class connection
 {
-    connectionId_t connection_id_;
-    fdRaii cfd_; // client file descriptor
+    std::unique_ptr<connectionId_t> connectionIdPtr_;
+    fdRaii cfd_;
     std::shared_ptr<httpRequestParser> httpRequestParser_;
     std::shared_ptr<httpResponseCreator> httpResponseCreator_;
     std::shared_mutex read_mutex_;
@@ -19,164 +21,146 @@ class connection
 
 public:
     connection(connectionId_t id, int cfd)
-        : connection_id_(id),
+        : connectionIdPtr_(std::make_unique<connectionId_t>(id)),
           cfd_(cfd),
           httpRequestParser_(std::make_shared<httpRequestParser>(cfd)),
-          httpResponseCreator_(std::make_shared<httpResponseCreator>()) {}
+          httpResponseCreator_(std::make_shared<httpResponseCreator>())
+    {
+        logger::getInstance().logInfo("[connection] Created, id=" + std::to_string(*connectionIdPtr_) +
+                                      ", fd=" + std::to_string(cfd_));
+    }
 
     ~connection()
     {
-        // Acquire both locks to ensure no ongoing operations
         std::unique_lock read_lock(read_mutex_);
         std::unique_lock write_lock(write_mutex_);
-        // Safe destruction - no races
+        logger::getInstance().logInfo("[connection] Destroyed, id=" + std::to_string(*connectionIdPtr_) +
+                                      ", fd=" + std::to_string(cfd_));
     }
 
-    connectionId_t getId() const noexcept { return connection_id_; }
+    connectionId_t getId() const noexcept { return *connectionIdPtr_; }
     int getFd() const noexcept { return cfd_; }
 
-    // Read operation - requires read lock
     std::pair<bool, std::vector<std::unique_ptr<httpRequest>>> readRequests()
     {
-        std::shared_lock lock(read_mutex_);
-        std::pair<bool, std::vector<std::unique_ptr<httpRequest>>> res = httpRequestParser_->parseRequest();
-
-        bool success = res.first;
+        std::unique_lock lock(read_mutex_);
+        auto res = httpRequestParser_->parseRequest();
 
         if (res.first)
         {
-            // Set connection ID in all requests for responder
             for (auto &req : res.second)
             {
-                req->connectionId_ = connection_id_;
+                req->connectionId_ = *connectionIdPtr_;
             }
-            return std::make_pair<bool, std::vector<std::unique_ptr<httpRequest>>>(true, std::move(res.second));
+            logger::getInstance().logInfo("[connection] Read " + std::to_string(res.second.size()) +
+                                          " requests, id=" + std::to_string(*connectionIdPtr_));
+            return {true, std::move(res.second)};
         }
-        return std::make_pair<bool, std::vector<std::unique_ptr<httpRequest>>>(false, std::vector<std::unique_ptr<httpRequest>>{});
+
+        logger::getInstance().logError("[connection] Failed to read requests, id=" +
+                                       std::to_string(*connectionIdPtr_));
+        return {false, std::vector<std::unique_ptr<httpRequest>>()};
     }
 
-    //     // Write operation - requires write lock
     bool writeResponse(const httpResponse &response)
     {
-        std::shared_lock lock(write_mutex_);
+        std::unique_lock lock(write_mutex_);
         httpResponseCreator_->addResponse(response);
-        return httpResponseCreator_->write(cfd_);
+        bool ok = httpResponseCreator_->write(cfd_);
+        logger::getInstance().logInfo(std::string("[connection] Write response ") +
+                                      (ok ? "success" : "failed") +
+                                      ", id=" + std::to_string(*connectionIdPtr_));
+        return ok;
     }
 
-    friend class ConnectionManager;
+    friend class connectionManager;
 };
 
 class connectionManager
 {
 private:
-    std::unordered_map<connectionId_t, std::shared_ptr<connection>> connections_by_id_;
-    std::unordered_map<int, connectionId_t> fd_to_id_; // Map FD to connection ID
-    std::shared_mutex global_mutex_;
-    std::atomic<connectionId_t> next_connection_id_{1};
+    std::unordered_map<connectionId_t, std::shared_ptr<connection>> connectionById_;
+    std::unordered_map<int, connectionId_t> fdToId_;
+    std::shared_mutex globalMutex_;
+    std::atomic<connectionId_t> nextConnId_{1};
 
 public:
-    // Add connection and return the connection ID
-    connectionId_t addConnection(int cfd)
+    connectionId_t *addConnection(int cfd)
     {
-        std::unique_lock lock(global_mutex_);
-        connectionId_t id = next_connection_id_++;
+        std::unique_lock lock(globalMutex_);
+        connectionId_t id = nextConnId_++;
         auto conn = std::make_shared<connection>(id, cfd);
 
-        connections_by_id_.try_emplace(id, conn);
-        fd_to_id_.try_emplace(cfd, id);
+        connectionById_.emplace(id, conn);
+        fdToId_.emplace(cfd, id);
 
-        return id;
+        logger::getInstance().logInfo("[connectionManager] Added connection id=" + std::to_string(id) +
+                                      ", fd=" + std::to_string(cfd));
+        return conn->connectionIdPtr_.get();
     }
 
-    // Remove connection by ID - acquires both connection locks internally
     bool removeConnection(connectionId_t connection_id)
     {
-        std::unique_lock global_lock(global_mutex_);
-        auto id_it = connections_by_id_.find(connection_id);
-        if (id_it == connections_by_id_.end())
+        std::unique_lock global_lock(globalMutex_);
+        auto id_it = connectionById_.find(connection_id);
+        if (id_it == connectionById_.end())
         {
+            logger::getInstance().logError("[connectionManager] Remove failed, id not found=" +
+                                           std::to_string(connection_id));
             return false;
         }
 
-        // Remove from FD mapping first
         int fd = id_it->second->getFd();
-        fd_to_id_.erase(fd);
+        fdToId_.erase(fd);
+        connectionById_.erase(id_it);
 
-        // Connection destructor will acquire both read/write locks
-        connections_by_id_.erase(id_it);
-
+        logger::getInstance().logInfo("[connectionManager] Removed connection id=" +
+                                      std::to_string(connection_id) + ", fd=" + std::to_string(fd));
         return true;
     }
 
-    // Remove connection by FD
     bool removeConnectionByFd(int cfd)
     {
-        std::unique_lock global_lock(global_mutex_);
-        auto fd_it = fd_to_id_.find(cfd);
-        if (fd_it == fd_to_id_.end())
+        std::unique_lock global_lock(globalMutex_);
+        auto fd_it = fdToId_.find(cfd);
+        if (fd_it == fdToId_.end())
         {
+            logger::getInstance().logError("[connectionManager] Remove by fd failed, fd not found=" +
+                                           std::to_string(cfd));
             return false;
         }
 
         connectionId_t id = fd_it->second;
-        fd_to_id_.erase(fd_it);
-        connections_by_id_.erase(id);
+        fdToId_.erase(fd_it);
+        connectionById_.erase(id);
 
+        logger::getInstance().logInfo("[connectionManager] Removed connection by fd=" +
+                                      std::to_string(cfd) + ", id=" + std::to_string(id));
         return true;
     }
 
-    // Server API: Read requests using connection ID
     std::pair<bool, std::vector<std::unique_ptr<httpRequest>>> readRequests(connectionId_t connection_id)
     {
-        std::shared_lock lock(global_mutex_);
-        if (auto it = connections_by_id_.find(connection_id); it != connections_by_id_.end())
+        std::unique_lock lock(globalMutex_);
+        if (auto it = connectionById_.find(connection_id); it != connectionById_.end())
         {
             return it->second->readRequests();
         }
+        logger::getInstance().logError("[connectionManager] Read requests failed, id not found=" +
+                                       std::to_string(connection_id));
+
         return {false, std::vector<std::unique_ptr<httpRequest>>()};
     }
 
-    // Responder API: Write response using connection ID
     bool writeResponse(connectionId_t connection_id, const httpResponse &response)
     {
-        std::shared_lock lock(global_mutex_);
-        if (auto it = connections_by_id_.find(connection_id); it != connections_by_id_.end())
+        std::unique_lock lock(globalMutex_);
+        if (auto it = connectionById_.find(connection_id); it != connectionById_.end())
         {
             return it->second->writeResponse(response);
         }
+        logger::getInstance().logError("[connectionManager] Write response failed, id not found=" +
+                                       std::to_string(connection_id));
         return false;
-    }
-
-    // Utility methods
-    connectionId_t getConnectionId(int cfd)
-    {
-        std::shared_lock lock(global_mutex_);
-        if (auto it = fd_to_id_.find(cfd); it != fd_to_id_.end())
-        {
-            return it->second;
-        }
-        return 0;
-    }
-
-    int getConnectionFd(connectionId_t connection_id)
-    {
-        std::shared_lock lock(global_mutex_);
-        if (auto it = connections_by_id_.find(connection_id); it != connections_by_id_.end())
-        {
-            return it->second->getFd();
-        }
-        return -1;
-    }
-
-    bool isValidConnection(connectionId_t connection_id)
-    {
-        std::shared_lock lock(global_mutex_);
-        return connections_by_id_.contains(connection_id);
-    }
-
-    bool isValidFd(int cfd)
-    {
-        std::shared_lock lock(global_mutex_);
-        return fd_to_id_.contains(cfd);
     }
 };

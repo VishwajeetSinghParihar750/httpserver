@@ -59,15 +59,19 @@ public:
 
             auto conid = res->getConnectionId();
 
+            bool closeConn = false;
+
             if (connectionManager_->writeResponse(conid, *res) == false)
             {
+                // for now just disconnect, add epoll later
+                closeConn = true;
+            }
 
-                // for now just disconnect
+            if (res->headers_.contains("error"))
+                closeConn = true;
+
+            if (closeConn)
                 connectionManager_->removeConnection(conid);
-            }
-            else
-            {
-            }
         }
         logger::getInstance().logInfo("[responder] Event loop stopped");
     }
